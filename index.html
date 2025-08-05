@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>QR Code Scanner</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jsqr@1.1.0/dist/jsQR.min.js"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+        #video-container {
+            position: relative;
+            width: 100%;
+            max-width: 600px;
+        }
+        #video {
+            width: 100%;
+            border-radius: 1rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        }
+        #canvas {
+            display: none; /* Initially hide the canvas */
+        }
+        #result-box {
+            min-height: 5rem;
+        }
+        .text-success {
+            color: #10B981; /* Tailwind's green-500 */
+        }
+        .text-error {
+            color: #EF4444; /* Tailwind's red-500 */
+        }
+        .responsive-select {
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            appearance: none;
+            background-image: url('data:image/svg+xml;charset=US-ASCII,%3Csvg xmlns="http://www.w3.org/2000/svg" width="292.4" height="292.4" fill="%232d3748" viewBox="0 0 292.4 292.4"%3E%3Cpath d="M287 78.4L146.2 227.6 5.4 78.4h281.6z"/%3E%3C/svg%3E');
+            background-repeat: no-repeat;
+            background-position: right 0.7em top 50%;
+            background-size: 0.65em auto;
+            padding-right: 2.5em;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen p-4">
+    <div class="bg-white p-6 md:p-10 rounded-3xl shadow-xl max-w-lg w-full text-center space-y-6">
+        <h1 class="text-3xl md:text-4xl font-bold text-gray-800">QR Code Scanner</h1>
+        <p class="text-gray-600">Select the day and session, then scan the QR code.</p>
+        
+        <!-- Dropdown menus for Day and Session -->
+        <div class="flex flex-col md:flex-row gap-4 justify-center">
+            <div class="flex flex-col items-center flex-1">
+                <label for="day-select" class="text-gray-700 font-medium">Day:</label>
+                <select id="day-select" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 responsive-select px-4 py-2">
+                    <option value="1">Day 1</option>
+                    <option value="2">Day 2</option>
+                    <option value="3">Day 3</option>
+                </select>
+            </div>
+            <div class="flex flex-col items-center flex-1">
+                <label for="session-select" class="text-gray-700 font-medium">Session:</label>
+                <select id="session-select" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-300 focus:ring focus:ring-indigo-200 focus:ring-opacity-50 responsive-select px-4 py-2">
+                    <option value="Morning">Morning</option>
+                    <option value="Evening">Evening</option>
+                </select>
+            </div>
+        </div>
+
+        <div id="video-container" class="mx-auto aspect-video">
+            <video id="video" class="w-full rounded-2xl shadow-lg" playsinline></video>
+            <canvas id="detection-canvas" class="absolute top-0 left-0 w-full h-full"></canvas>
+        </div>
+        
+        <canvas id="canvas"></canvas>
+        
+        <div id="result-box" class="bg-gray-50 p-4 md:p-6 rounded-2xl border border-gray-200">
+            <p id="result-text" class="text-lg text-gray-700 font-semibold">No QR code detected.</p>
+        </div>
+    </div>
+
+    <script>
+        // Get references to the HTML elements
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const detectionCanvas = document.getElementById('detection-canvas');
+        const resultText = document.getElementById('result-text');
+        const daySelect = document.getElementById('day-select');
+        const sessionSelect = document.getElementById('session-select');
+        
+        const context = canvas.getContext('2d', { willReadFrequently: true });
+        const detectionContext = detectionCanvas.getContext('2d');
+        
+        let videoStream;
+        let isScanning = false;
+        
+        // The URL for your deployed Apps Script Web App.
+        const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbz0xP_G7xC0emkXsRO6HOC6pid74_CssUffN63JP61JdiAVjSXXU04hcUoz5vfxEQtO/exec';
+
+        /**
+         * Starts the video stream from the user's camera.
+         */
+        async function startCamera() {
+            try {
+                // Request access to the user's camera. 'environment' ensures the back camera is used on mobile.
+                videoStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+                video.srcObject = videoStream;
+                video.setAttribute('playsinline', true); // Required for iOS to play video inline
+                video.play();
+                requestAnimationFrame(tick);
+            } catch (err) {
+                console.error('Error accessing the camera: ', err);
+                resultText.textContent = 'Error: Could not access camera. Please ensure permissions are granted.';
+                resultText.classList.add('text-error');
+            }
+        }
+
+        /**
+         * Sends the scanned QR code ID to the Google Apps Script web app.
+         * @param {string} qrCodeId The ID extracted from the QR code.
+         */
+        async function sendDataToAppsScript(qrCodeId) {
+            isScanning = true;
+            resultText.textContent = 'Scanning...';
+            resultText.classList.remove('text-success', 'text-error');
+
+            const selectedDay = daySelect.value;
+            const selectedSession = sessionSelect.value;
+            
+            try {
+                // Send the day and session along with the QR code ID.
+                const response = await fetch(`${APPS_SCRIPT_URL}?id=${encodeURIComponent(qrCodeId)}&day=${selectedDay}&session=${selectedSession}`);
+                
+                const jsonResponse = await response.json();
+                
+                const message = jsonResponse.message;
+                const isSuccess = jsonResponse.success;
+                
+                resultText.innerHTML = message;
+                resultText.classList.add(isSuccess ? 'text-success' : 'text-error');
+                
+                // Allow a new scan after a short debounce delay to prevent re-scanning the same code.
+                setTimeout(() => {
+                    isScanning = false;
+                }, 300); // Shorter 300ms delay for a faster feel.
+
+            } catch (err) {
+                console.error('Error fetching data from Apps Script:', err);
+                resultText.textContent = 'Error: Could not connect to the database.';
+                resultText.classList.add('text-error');
+                isScanning = false;
+            }
+        }
+
+        /**
+         * The main animation loop to continuously scan for QR codes.
+         */
+        function tick() {
+            if (video.readyState === video.HAVE_ENOUGH_DATA && !isScanning) {
+                // Set canvas dimensions to match video
+                canvas.height = video.videoHeight;
+                canvas.width = video.videoWidth;
+                detectionCanvas.height = video.videoHeight;
+                detectionCanvas.width = video.videoWidth;
+
+                // Draw video frame to the hidden canvas for processing
+                context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                
+                const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+                const code = jsQR(imageData.data, imageData.width, imageData.height);
+                
+                detectionContext.clearRect(0, 0, detectionCanvas.width, detectionCanvas.height);
+                
+                if (code) {
+                    // Draw a red box around the detected QR code
+                    detectionContext.beginPath();
+                    detectionContext.moveTo(code.location.topLeftCorner.x, code.location.topLeftCorner.y);
+                    detectionContext.lineTo(code.location.topRightCorner.x, code.location.topRightCorner.y);
+                    detectionContext.lineTo(code.location.bottomRightCorner.x, code.location.bottomRightCorner.y);
+                    detectionContext.lineTo(code.location.bottomLeftCorner.x, code.location.bottomLeftCorner.y);
+                    detectionContext.closePath();
+                    detectionContext.strokeStyle = 'red';
+                    detectionContext.lineWidth = 4;
+                    detectionContext.stroke();
+
+                    // Send the data immediately upon detection.
+                    sendDataToAppsScript(code.data);
+                } else {
+                     // Display a message when no QR code is in view
+                     resultText.textContent = 'No QR code detected.';
+                     resultText.classList.remove('text-success', 'text-error');
+                }
+            }
+            requestAnimationFrame(tick);
+        }
+
+        // Start the camera when the window has loaded
+        window.onload = function() {
+            startCamera();
+        };
+    </script>
+</body>
+</html>
