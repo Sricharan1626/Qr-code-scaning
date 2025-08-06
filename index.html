@@ -92,37 +92,62 @@
         const scanCooldown = 3000;
 
         /**
-         * Sends data to the Google Apps Script backend.
+         * Performs a JSONP request to bypass CORS issues.
+         * This works by dynamically creating a <script> tag.
          * @param {Object} params - The parameters to send in the request.
-         * @returns {Promise<Object>} The JSON response from the server.
+         * @param {Function} callback - The function to execute with the response data.
          */
-        async function sendRequest(params) {
+        function jsonpRequest(params, callback) {
             if (!APPS_SCRIPT_URL || APPS_SCRIPT_URL.includes('PASTE_YOUR_NEW_EXEC_URL_HERE')) {
-                throw new Error("URL is not configured in the HTML file.");
+                const errorMsg = "URL is not configured in the HTML file.";
+                console.error(errorMsg);
+                if (params.action === 'login') {
+                    loginError.textContent = errorMsg;
+                    loginButton.disabled = false;
+                    loginButton.textContent = 'Unlock Scanner';
+                }
+                return;
             }
+
+            const callbackName = 'jsonp_callback_' + Math.round(100000 * Math.random());
+            window[callbackName] = function(data) {
+                delete window[callbackName];
+                document.body.removeChild(script);
+                callback(data);
+            };
+
             const url = new URL(APPS_SCRIPT_URL);
             Object.keys(params).forEach(key => url.searchParams.append(key, params[key]));
+            url.searchParams.append('callback', callbackName);
+
+            const script = document.createElement('script');
+            script.src = url.toString();
             
-            const response = await fetch(url);
-            if (!response.ok) {
-                throw new Error(`Network error: ${response.statusText}`);
-            }
-            return response.json();
+            script.onerror = () => {
+                delete window[callbackName];
+                const errorMsg = "Connection error. Check URL/permissions.";
+                 if (params.action === 'login') {
+                    loginError.textContent = errorMsg;
+                    loginButton.disabled = false;
+                    loginButton.textContent = 'Unlock Scanner';
+                }
+                console.error(errorMsg);
+            };
+
+            document.body.appendChild(script);
         }
         
         // --- LOGIN LOGIC ---
-        loginForm.addEventListener('submit', async (e) => {
+        loginForm.addEventListener('submit', (e) => {
             e.preventDefault();
             loginButton.disabled = true;
             loginButton.textContent = 'Verifying...';
             loginError.textContent = '';
 
-            try {
-                const response = await sendRequest({
-                    action: 'login',
-                    password: passwordInput.value
-                });
-
+            jsonpRequest({
+                action: 'login',
+                password: passwordInput.value
+            }, (response) => {
                 if (response.success) {
                     sessionStorage.setItem('scannerLoggedIn', 'true');
                     sessionStorage.setItem('sessionDay', response.day);
@@ -131,47 +156,36 @@
                 } else {
                     loginError.textContent = response.message || "Login failed.";
                 }
-            } catch (error) {
-                loginError.textContent = "Connection error. Check console.";
-                console.error("Login error:", error);
-            } finally {
                 loginButton.disabled = false;
                 loginButton.textContent = 'Unlock Scanner';
-            }
+            });
         });
 
         /**
          * Handles the QR code scan event.
          * @param {string} qrCodeId - The ID from the scanned QR code.
          */
-        async function onScanSuccess(qrCodeId) {
+        function onScanSuccess(qrCodeId) {
             if (isScanning) return;
             isScanning = true;
 
             resultText.textContent = 'Verifying...';
             resultBox.className = 'bg-gray-50 p-4 rounded-2xl border border-gray-200 flex items-center justify-center';
 
-            try {
-                const response = await sendRequest({
-                    action: 'markAttendance',
-                    id: qrCodeId
-                });
-                
+            jsonpRequest({
+                action: 'markAttendance',
+                id: qrCodeId
+            }, (response) => {
                 resultText.innerHTML = response.message;
                 resultBox.classList.add(response.success ? 'status-success' : 'status-error');
                 playSound(response.success);
-            } catch (error) {
-                resultText.textContent = 'Error: Could not connect.';
-                resultBox.classList.add('status-error');
-                playSound(false);
-                console.error("Scan error:", error);
-            } finally {
+
                 setTimeout(() => {
                     isScanning = false;
                     resultText.textContent = 'Ready to scan.';
                     resultBox.className = 'bg-gray-50 p-4 rounded-2xl border border-gray-200 flex items-center justify-center';
                 }, scanCooldown);
-            }
+            });
         }
 
         function playSound(isSuccess) {
